@@ -1,29 +1,33 @@
-// +build !confonly
-
 package socks
 
 import (
 	"context"
 	"time"
 
-	core "github.com/v2fly/v2ray-core/v4"
-	"github.com/v2fly/v2ray-core/v4/common"
-	"github.com/v2fly/v2ray-core/v4/common/buf"
-	"github.com/v2fly/v2ray-core/v4/common/net"
-	"github.com/v2fly/v2ray-core/v4/common/protocol"
-	"github.com/v2fly/v2ray-core/v4/common/retry"
-	"github.com/v2fly/v2ray-core/v4/common/session"
-	"github.com/v2fly/v2ray-core/v4/common/signal"
-	"github.com/v2fly/v2ray-core/v4/common/task"
-	"github.com/v2fly/v2ray-core/v4/features/policy"
-	"github.com/v2fly/v2ray-core/v4/transport"
-	"github.com/v2fly/v2ray-core/v4/transport/internet"
+	core "github.com/v2fly/v2ray-core/v5"
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/common/buf"
+	"github.com/v2fly/v2ray-core/v5/common/net"
+	"github.com/v2fly/v2ray-core/v5/common/net/packetaddr"
+	"github.com/v2fly/v2ray-core/v5/common/protocol"
+	"github.com/v2fly/v2ray-core/v5/common/retry"
+	"github.com/v2fly/v2ray-core/v5/common/session"
+	"github.com/v2fly/v2ray-core/v5/common/signal"
+	"github.com/v2fly/v2ray-core/v5/common/task"
+	"github.com/v2fly/v2ray-core/v5/features/dns"
+	"github.com/v2fly/v2ray-core/v5/features/policy"
+	"github.com/v2fly/v2ray-core/v5/transport"
+	"github.com/v2fly/v2ray-core/v5/transport/internet"
+	"github.com/v2fly/v2ray-core/v5/transport/internet/udp"
 )
 
 // Client is a Socks5 client.
 type Client struct {
-	serverPicker  protocol.ServerPicker
-	policyManager policy.Manager
+	serverPicker   protocol.ServerPicker
+	policyManager  policy.Manager
+	version        Version
+	dns            dns.Client
+	delayAuthWrite bool
 }
 
 // NewClient create a new Socks5 client based on the given config.
@@ -41,10 +45,17 @@ func NewClient(ctx context.Context, config *ClientConfig) (*Client, error) {
 	}
 
 	v := core.MustFromContext(ctx)
-	return &Client{
-		serverPicker:  protocol.NewRoundRobinServerPicker(serverList),
-		policyManager: v.GetFeature(policy.ManagerType()).(policy.Manager),
-	}, nil
+	c := &Client{
+		serverPicker:   protocol.NewRoundRobinServerPicker(serverList),
+		policyManager:  v.GetFeature(policy.ManagerType()).(policy.Manager),
+		version:        config.Version,
+		delayAuthWrite: config.DelayAuthWrite,
+	}
+	if config.Version == Version_SOCKS4 {
+		c.dns = v.GetFeature(dns.ClientType()).(dns.Client)
+	}
+
+	return c, nil
 }
 
 // Process implements proxy.Outbound.Process.
@@ -91,6 +102,29 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 		Address: destination.Address,
 		Port:    destination.Port,
 	}
+
+	switch c.version {
+	case Version_SOCKS4:
+		if request.Address.Family().IsDomain() {
+			ips, err := dns.LookupIPWithOption(c.dns, request.Address.Domain(), dns.IPOption{IPv4Enable: true, IPv6Enable: false, FakeEnable: false})
+			if err != nil {
+				return err
+			} else if len(ips) == 0 {
+				return dns.ErrEmptyResponse
+			}
+			request.Address = net.IPAddress(ips[0])
+		}
+		fallthrough
+	case Version_SOCKS4A:
+		request.Version = socks4Version
+
+		if destination.Network == net.Network_UDP {
+			return newError("udp is not supported in socks4")
+		} else if destination.Address.Family().IsIPv6() {
+			return newError("ipv6 is not supported in socks4")
+		}
+	}
+
 	if destination.Network == net.Network_UDP {
 		request.Command = protocol.RequestCommandUDP
 	}
@@ -104,10 +138,21 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 	if err := conn.SetDeadline(time.Now().Add(p.Timeouts.Handshake)); err != nil {
 		newError("failed to set deadline for handshake").Base(err).WriteToLog(session.ExportIDToError(ctx))
 	}
-	udpRequest, err := ClientHandshake(request, conn, conn)
-	if err != nil {
-		return newError("failed to establish connection to server").AtWarning().Base(err)
+
+	var udpRequest *protocol.RequestHeader
+	var err error
+	if request.Version == socks4Version {
+		err = ClientHandshake4(request, conn, conn)
+		if err != nil {
+			return newError("failed to establish connection to server").AtWarning().Base(err)
+		}
+	} else {
+		udpRequest, err = ClientHandshake(request, conn, conn, c.delayAuthWrite)
+		if err != nil {
+			return newError("failed to establish connection to server").AtWarning().Base(err)
+		}
 	}
+
 	if udpRequest != nil {
 		if udpRequest.Address == net.AnyIP || udpRequest.Address == net.AnyIPv6 {
 			udpRequest.Address = dest.Address
@@ -120,6 +165,30 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 
 	ctx, cancel := context.WithCancel(ctx)
 	timer := signal.CancelAfterInactivity(ctx, cancel, p.Timeouts.ConnectionIdle)
+
+	if packetConn, err := packetaddr.ToPacketAddrConn(link, destination); err == nil {
+		udpConn, err := dialer.Dial(ctx, udpRequest.Destination())
+		if err != nil {
+			return newError("failed to create UDP connection").Base(err)
+		}
+		defer udpConn.Close()
+
+		requestDone := func() error {
+			protocolWriter := NewUDPWriter(request, udpConn)
+			return udp.CopyPacketConn(protocolWriter, packetConn, udp.UpdateActivity(timer))
+		}
+		responseDone := func() error {
+			protocolReader := &UDPReader{
+				reader: udpConn,
+			}
+			return udp.CopyPacketConn(packetConn, protocolReader, udp.UpdateActivity(timer))
+		}
+		responseDoneAndCloseWriter := task.OnSuccess(responseDone, task.Close(link.Writer))
+		if err := task.Run(ctx, requestDone, responseDoneAndCloseWriter); err != nil {
+			return newError("connection ends").Base(err)
+		}
+		return nil
+	}
 
 	var requestFunc func() error
 	var responseFunc func() error
@@ -149,7 +218,7 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 		}
 	}
 
-	var responseDonePost = task.OnSuccess(responseFunc, task.Close(link.Writer))
+	responseDonePost := task.OnSuccess(responseFunc, task.Close(link.Writer))
 	if err := task.Run(ctx, requestFunc, responseDonePost); err != nil {
 		return newError("connection ends").Base(err)
 	}

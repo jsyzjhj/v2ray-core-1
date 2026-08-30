@@ -1,5 +1,3 @@
-// +build !confonly
-
 package kcp
 
 import (
@@ -11,9 +9,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/v2fly/v2ray-core/v4/common/buf"
-	"github.com/v2fly/v2ray-core/v4/common/signal"
-	"github.com/v2fly/v2ray-core/v4/common/signal/semaphore"
+	"github.com/v2fly/v2ray-core/v5/common/buf"
+	"github.com/v2fly/v2ray-core/v5/common/signal"
+	"github.com/v2fly/v2ray-core/v5/common/signal/semaphore"
 )
 
 var (
@@ -392,7 +390,9 @@ func (c *Connection) writeMultiBufferInternal(reader io.Reader) error {
 	}()
 
 	var b *buf.Buffer
-	defer b.Release()
+	defer func() {
+		b.Release()
+	}()
 
 	for {
 		for {
@@ -539,6 +539,7 @@ func (c *Connection) Terminate() {
 	c.closer.Close()
 	c.sendingWorker.Release()
 	c.receivingWorker.Release()
+	c.output.Release()
 }
 
 func (c *Connection) HandleOption(opt SegmentOption) {

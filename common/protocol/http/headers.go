@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/v2fly/v2ray-core/v4/common/net"
+	"github.com/v2fly/v2ray-core/v5/common/net"
 )
 
 // ParseXForwardedFor parses X-Forwarded-For header in http headers, and return the IP list in it.
@@ -35,6 +35,7 @@ func RemoveHopByHopHeaders(header http.Header) {
 	header.Del("Trailers")
 	header.Del("Transfer-Encoding")
 	header.Del("Upgrade")
+	header.Del("Keep-Alive")
 
 	connections := header.Get("Connection")
 	header.Del("Connection")

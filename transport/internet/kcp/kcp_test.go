@@ -7,18 +7,40 @@ import (
 	"testing"
 	"time"
 
+	"github.com/v2fly/v2ray-core/v5/common/environment/deferredpersistentstorage"
+	"github.com/v2fly/v2ray-core/v5/common/environment/filesystemimpl"
+
+	"github.com/v2fly/v2ray-core/v5/common/environment"
+	"github.com/v2fly/v2ray-core/v5/common/environment/envctx"
+	"github.com/v2fly/v2ray-core/v5/common/environment/systemnetworkimpl"
+	"github.com/v2fly/v2ray-core/v5/common/environment/transientstorageimpl"
+
 	"github.com/google/go-cmp/cmp"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/v2fly/v2ray-core/v4/common"
-	"github.com/v2fly/v2ray-core/v4/common/errors"
-	"github.com/v2fly/v2ray-core/v4/common/net"
-	"github.com/v2fly/v2ray-core/v4/transport/internet"
-	. "github.com/v2fly/v2ray-core/v4/transport/internet/kcp"
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/common/errors"
+	"github.com/v2fly/v2ray-core/v5/common/net"
+	"github.com/v2fly/v2ray-core/v5/transport/internet"
+	. "github.com/v2fly/v2ray-core/v5/transport/internet/kcp"
 )
 
 func TestDialAndListen(t *testing.T) {
-	listerner, err := NewListener(context.Background(), net.LocalHostIP, net.Port(0), &internet.MemoryStreamConfig{
+	ctx := context.Background()
+	defaultNetworkImpl := systemnetworkimpl.NewSystemNetworkDefault()
+	defaultFilesystemImpl := filesystemimpl.NewDefaultFileSystemDefaultImpl()
+	deferredPersistentStorageImpl := deferredpersistentstorage.NewDeferredPersistentStorage(ctx)
+	rootEnv := environment.NewRootEnvImpl(ctx,
+		transientstorageimpl.NewScopedTransientStorageImpl(), defaultNetworkImpl.Dialer(), defaultNetworkImpl.Listener(),
+		defaultFilesystemImpl, deferredPersistentStorageImpl)
+	proxyEnvironment := rootEnv.ProxyEnvironment("o")
+	transportEnvironment, err := proxyEnvironment.NarrowScopeToTransport("kcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx = envctx.ContextWithEnvironment(ctx, transportEnvironment)
+
+	listener, err := NewListener(ctx, net.LocalHostIP, net.Port(0), &internet.MemoryStreamConfig{
 		ProtocolName:     "mkcp",
 		ProtocolSettings: &Config{},
 	}, func(conn internet.Connection) {
@@ -38,14 +60,14 @@ func TestDialAndListen(t *testing.T) {
 		}(conn)
 	})
 	common.Must(err)
-	defer listerner.Close()
+	defer listener.Close()
 
-	port := net.Port(listerner.Addr().(*net.UDPAddr).Port)
+	port := net.Port(listener.Addr().(*net.UDPAddr).Port)
 
 	var errg errgroup.Group
 	for i := 0; i < 10; i++ {
 		errg.Go(func() error {
-			clientConn, err := DialKCP(context.Background(), net.UDPDestination(net.LocalHostIP, port), &internet.MemoryStreamConfig{
+			clientConn, err := DialKCP(ctx, net.UDPDestination(net.LocalHostIP, port), &internet.MemoryStreamConfig{
 				ProtocolName:     "mkcp",
 				ProtocolSettings: &Config{},
 			})
@@ -76,10 +98,10 @@ func TestDialAndListen(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for i := 0; i < 60 && listerner.ActiveConnections() > 0; i++ {
+	for i := 0; i < 60 && listener.ActiveConnections() > 0; i++ {
 		time.Sleep(500 * time.Millisecond)
 	}
-	if v := listerner.ActiveConnections(); v != 0 {
+	if v := listener.ActiveConnections(); v != 0 {
 		t.Error("active connections: ", v)
 	}
 }

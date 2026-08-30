@@ -4,14 +4,22 @@ import (
 	"encoding/binary"
 	"io"
 
-	"github.com/v2fly/v2ray-core/v4/common"
-	"github.com/v2fly/v2ray-core/v4/common/buf"
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/common/buf"
 )
 
 // ChunkSizeDecoder is a utility class to decode size value from bytes.
 type ChunkSizeDecoder interface {
+	// SizeBytes must be stable, return the same value across all calls
 	SizeBytes() int32
 	Decode([]byte) (uint16, error)
+}
+
+type ChunkSizeDecoderWithOffset interface {
+	ChunkSizeDecoder
+	// HasConstantOffset set the constant offset of Decode
+	// The effective size should be HasConstantOffset() + Decode(_).[0](uint64)
+	HasConstantOffset() uint16
 }
 
 // ChunkSizeEncoder is a utility class to encode size value into bytes.

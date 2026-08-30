@@ -1,40 +1,70 @@
-run:
-  timeout: 5m
-  skip-files:
-    - generated.*
-
-issues:
-  new: true
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - scopelint
-
+version: "2"
 linters:
   enable:
+    - asciicheck
     - bodyclose
     - depguard
     - gocritic
-    - gofmt
-    - goimports
-    - golint
     - goprintffuncname
-    - gosimple
-    - govet
-    - ineffassign
     - misspell
     - nakedret
+    - revive
     - rowserrcheck
-    - scopelint
     - staticcheck
-    - structcheck
-    - stylecheck
-    - typecheck
     - unconvert
     - unparam
-    - varcheck
     - whitespace
   disable:
-    - deadcode
     - errcheck
     - unused
+  settings:
+    depguard:
+      rules:
+        Main:
+          deny:
+            - pkg: github.com/pkg/errors
+              desc: Should be replaced by standard lib errors package
+    revive:
+      rules:
+        - name: blank-imports
+          severity: warning
+          disabled: true
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - staticcheck
+        text: 'SA1019:'
+      - linters:
+          - staticcheck
+        text: 'ST1016:'
+    paths:
+      - generated.*
+      - .pb.go
+      - third_party$
+      - builtin$
+      - examples$
+issues:
+  new: true
+formatters:
+  enable:
+    - gofmt
+    - gofumpt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/v2fly/v2ray-core
+  exclusions:
+    generated: lax
+    paths:
+      - generated.*
+      - .pb.go
+      - third_party$
+      - builtin$
+      - examples$

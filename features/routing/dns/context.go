@@ -1,11 +1,11 @@
 package dns
 
-//go:generate go run github.com/v2fly/v2ray-core/v4/common/errors/errorgen
+//go:generate go run github.com/v2fly/v2ray-core/v5/common/errors/errorgen
 
 import (
-	"github.com/v2fly/v2ray-core/v4/common/net"
-	"github.com/v2fly/v2ray-core/v4/features/dns"
-	"github.com/v2fly/v2ray-core/v4/features/routing"
+	"github.com/v2fly/v2ray-core/v5/common/net"
+	"github.com/v2fly/v2ray-core/v5/features/dns"
+	"github.com/v2fly/v2ray-core/v5/features/routing"
 )
 
 // ResolvableContext is an implementation of routing.Context, with domain resolving capability.
@@ -26,11 +26,7 @@ func (ctx *ResolvableContext) GetTargetIPs() []net.IP {
 	}
 
 	if domain := ctx.GetTargetDomain(); len(domain) != 0 {
-		ips, err := ctx.dnsClient.LookupIP(domain, dns.IPOption{
-			IPv4Enable: true,
-			IPv6Enable: true,
-			FakeEnable: false,
-		})
+		ips, err := ctx.dnsClient.LookupIP(domain)
 		if err == nil {
 			ctx.resolvedIPs = ips
 			return ips

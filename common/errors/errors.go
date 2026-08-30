@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/v2fly/v2ray-core/v4/common/log"
-	"github.com/v2fly/v2ray-core/v4/common/serial"
+	"github.com/v2fly/v2ray-core/v5/common/log"
+	"github.com/v2fly/v2ray-core/v5/common/serial"
 )
 
 type hasInnerError interface {
@@ -37,7 +37,11 @@ func (err *Error) pkgPath() string {
 	if err.pathObj == nil {
 		return ""
 	}
-	return reflect.TypeOf(err.pathObj).PkgPath()
+	path := reflect.TypeOf(err.pathObj).PkgPath()
+	// TODO update required on release
+	path = strings.TrimPrefix(path, "github.com/v2fly/v2ray-core/v5/")
+	path = strings.TrimPrefix(path, "github.com/v2fly/v2ray-core/v5")
+	return path
 }
 
 // Error implements error.Error().
@@ -71,6 +75,12 @@ func (err *Error) Inner() error {
 	if err.inner == nil {
 		return nil
 	}
+	return err.inner
+}
+
+// Unwrap implements the standard library's errors.Unwrap contract, allowing
+// errors.Is and errors.As to traverse to the underlying error.
+func (err *Error) Unwrap() error {
 	return err.inner
 }
 

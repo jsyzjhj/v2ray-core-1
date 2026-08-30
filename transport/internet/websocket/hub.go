@@ -1,27 +1,32 @@
-// +build !confonly
-
 package websocket
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
+	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
 
-	"github.com/v2fly/v2ray-core/v4/common"
-	"github.com/v2fly/v2ray-core/v4/common/net"
-	http_proto "github.com/v2fly/v2ray-core/v4/common/protocol/http"
-	"github.com/v2fly/v2ray-core/v4/common/session"
-	"github.com/v2fly/v2ray-core/v4/transport/internet"
-	v2tls "github.com/v2fly/v2ray-core/v4/transport/internet/tls"
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/common/net"
+	http_proto "github.com/v2fly/v2ray-core/v5/common/protocol/http"
+	"github.com/v2fly/v2ray-core/v5/common/session"
+	"github.com/v2fly/v2ray-core/v5/transport/internet"
+	v2tls "github.com/v2fly/v2ray-core/v5/transport/internet/tls"
 )
 
 type requestHandler struct {
-	path string
-	ln   *Listener
+	path                string
+	ln                  *Listener
+	earlyDataEnabled    bool
+	earlyDataHeaderName string
+	parseXForwardedFor  bool
 }
 
 var upgrader = &websocket.Upgrader{
@@ -34,11 +39,35 @@ var upgrader = &websocket.Upgrader{
 }
 
 func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
-	if request.URL.Path != h.path {
-		writer.WriteHeader(http.StatusNotFound)
-		return
+	responseHeader := http.Header{}
+
+	var earlyData io.Reader
+	if !h.earlyDataEnabled { // nolint: gocritic
+		if request.URL.Path != h.path {
+			writer.WriteHeader(http.StatusNotFound)
+			return
+		}
+	} else if h.earlyDataHeaderName != "" {
+		if request.URL.Path != h.path {
+			writer.WriteHeader(http.StatusNotFound)
+			return
+		}
+		earlyDataStr := request.Header.Get(h.earlyDataHeaderName)
+		earlyData = base64.NewDecoder(base64.RawURLEncoding, bytes.NewReader([]byte(earlyDataStr)))
+		if strings.EqualFold("Sec-WebSocket-Protocol", h.earlyDataHeaderName) {
+			responseHeader.Set(h.earlyDataHeaderName, earlyDataStr)
+		}
+	} else {
+		if strings.HasPrefix(request.URL.RequestURI(), h.path) {
+			earlyDataStr := request.URL.RequestURI()[len(h.path):]
+			earlyData = base64.NewDecoder(base64.RawURLEncoding, bytes.NewReader([]byte(earlyDataStr)))
+		} else {
+			writer.WriteHeader(http.StatusNotFound)
+			return
+		}
 	}
-	conn, err := upgrader.Upgrade(writer, request, nil)
+
+	conn, err := upgrader.Upgrade(writer, request, responseHeader)
 	if err != nil {
 		newError("failed to convert to WebSocket connection").Base(err).WriteToLog()
 		return
@@ -46,14 +75,17 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
 
 	forwardedAddrs := http_proto.ParseXForwardedFor(request.Header)
 	remoteAddr := conn.RemoteAddr()
-	if len(forwardedAddrs) > 0 && forwardedAddrs[0].Family().IsIP() {
+	if h.parseXForwardedFor && len(forwardedAddrs) > 0 && forwardedAddrs[0].Family().IsIP() {
 		remoteAddr = &net.TCPAddr{
 			IP:   forwardedAddrs[0].IP(),
 			Port: int(0),
 		}
 	}
-
-	h.ln.addConn(newConnection(conn, remoteAddr))
+	if earlyData == nil {
+		h.ln.addConn(newConnection(conn, remoteAddr))
+	} else {
+		h.ln.addConn(newConnectionWithEarlyData(conn, remoteAddr, earlyData))
+	}
 }
 
 type Listener struct {
@@ -62,7 +94,6 @@ type Listener struct {
 	listener net.Listener
 	config   *Config
 	addConn  internet.ConnHandler
-	locker   *internet.FileLocker // for unix domain socket
 }
 
 func ListenWS(ctx context.Context, address net.Address, port net.Port, streamSettings *internet.MemoryStreamConfig, addConn internet.ConnHandler) (internet.Listener, error) {
@@ -88,10 +119,6 @@ func ListenWS(ctx context.Context, address net.Address, port net.Port, streamSet
 			return nil, newError("failed to listen unix domain socket(for WS) on ", address).Base(err)
 		}
 		newError("listening unix domain socket(for WS) on ", address).WriteToLog(session.ExportIDToError(ctx))
-		locker := ctx.Value(address.Domain())
-		if locker != nil {
-			l.locker = locker.(*internet.FileLocker)
-		}
 	} else { // tcp
 		listener, err = internet.ListenSystem(ctx, &net.TCPAddr{
 			IP:   address.IP(),
@@ -114,14 +141,23 @@ func ListenWS(ctx context.Context, address net.Address, port net.Port, streamSet
 	}
 
 	l.listener = listener
+	useEarlyData := false
+	earlyDataHeaderName := ""
+	if wsSettings.MaxEarlyData != 0 {
+		useEarlyData = true
+		earlyDataHeaderName = wsSettings.EarlyDataHeaderName
+	}
 
 	l.server = http.Server{
 		Handler: &requestHandler{
-			path: wsSettings.GetNormalizedPath(),
-			ln:   l,
+			path:                wsSettings.GetNormalizedPath(),
+			ln:                  l,
+			earlyDataEnabled:    useEarlyData,
+			earlyDataHeaderName: earlyDataHeaderName,
+			parseXForwardedFor:  wsSettings.ParseXForwardedFor,
 		},
 		ReadHeaderTimeout: time.Second * 4,
-		MaxHeaderBytes:    2048,
+		MaxHeaderBytes:    http.DefaultMaxHeaderBytes,
 	}
 
 	go func() {
@@ -140,9 +176,6 @@ func (ln *Listener) Addr() net.Addr {
 
 // Close implements net.Listener.Close().
 func (ln *Listener) Close() error {
-	if ln.locker != nil {
-		ln.locker.Release()
-	}
 	return ln.listener.Close()
 }
 

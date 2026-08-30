@@ -1,22 +1,21 @@
-// +build !confonly
-
 package tls
 
 import (
+	"crypto/hmac"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/v2fly/v2ray-core/v4/common/net"
-	"github.com/v2fly/v2ray-core/v4/common/protocol/tls/cert"
-	"github.com/v2fly/v2ray-core/v4/transport/internet"
+	"github.com/v2fly/v2ray-core/v5/common/net"
+	"github.com/v2fly/v2ray-core/v5/common/protocol/tls/cert"
+	"github.com/v2fly/v2ray-core/v5/transport/internet"
 )
 
-var (
-	globalSessionCache = tls.NewLRUClientSessionCache(128)
-)
+var globalSessionCache = tls.NewLRUClientSessionCache(128)
 
 const exp8357 = "experiment:8357"
 
@@ -32,11 +31,13 @@ func ParseCertificate(c *cert.Certificate) *Certificate {
 	return nil
 }
 
-func (c *Config) loadSelfCertPool() (*x509.CertPool, error) {
+func (c *Config) loadSelfCertPool(usage Certificate_Usage) (*x509.CertPool, error) {
 	root := x509.NewCertPool()
 	for _, cert := range c.Certificate {
-		if !root.AppendCertsFromPEM(cert.Certificate) {
-			return nil, newError("failed to append cert").AtWarning()
+		if cert.Usage == usage {
+			if !root.AppendCertsFromPEM(cert.Certificate) {
+				return nil, newError("failed to append cert").AtWarning()
+			}
 		}
 	}
 	return root, nil
@@ -67,7 +68,7 @@ func isCertificateExpired(c *tls.Certificate) bool {
 	}
 
 	// If leaf is not there, the certificate is probably not used yet. We trust user to provide a valid certificate.
-	return c.Leaf != nil && c.Leaf.NotAfter.Before(time.Now().Add(-time.Minute))
+	return c.Leaf != nil && c.Leaf.NotAfter.Before(time.Now().Add(time.Minute*2))
 }
 
 func issueCertificate(rawCA *Certificate, domain string) (*tls.Certificate, error) {
@@ -120,6 +121,9 @@ func getGetCertificateFunc(c *tls.Config, ca []*Certificate) func(hello *tls.Cli
 				cert := certificate
 				if !isCertificateExpired(&cert) {
 					newCerts = append(newCerts, cert)
+				} else if cert.Leaf != nil {
+					expTime := cert.Leaf.NotAfter.Format(time.RFC3339)
+					newError("old certificate for ", domain, " (expire on ", expTime, ") discard").AtInfo().WriteToLog()
 				}
 			}
 
@@ -136,6 +140,14 @@ func getGetCertificateFunc(c *tls.Config, ca []*Certificate) func(hello *tls.Cli
 				if err != nil {
 					newError("failed to issue new certificate for ", domain).Base(err).WriteToLog()
 					continue
+				}
+				parsed, err := x509.ParseCertificate(newCert.Certificate[0])
+				if err == nil {
+					newCert.Leaf = parsed
+					expTime := parsed.NotAfter.Format(time.RFC3339)
+					newError("new certificate for ", domain, " (expire on ", expTime, ") issued").AtInfo().WriteToLog()
+				} else {
+					newError("failed to parse new certificate for ", domain).Base(err).WriteToLog()
 				}
 
 				access.Lock()
@@ -170,6 +182,29 @@ func (c *Config) parseServerName() string {
 	return c.ServerName
 }
 
+func (c *Config) verifyPeerCert(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+	if c.PinnedPeerCertificateChainSha256 != nil {
+		hashValue := GenerateCertChainHash(rawCerts)
+		for _, v := range c.PinnedPeerCertificateChainSha256 {
+			if hmac.Equal(hashValue, v) {
+				return nil
+			}
+		}
+		return newError("peer cert is unrecognized: ", base64.StdEncoding.EncodeToString(hashValue))
+	}
+	return nil
+}
+
+type alwaysFlushWriter struct {
+	file *os.File
+}
+
+func (a *alwaysFlushWriter) Write(p []byte) (n int, err error) {
+	n, err = a.file.Write(p)
+	a.file.Sync()
+	return n, err
+}
+
 // GetTLSConfig converts this Config into tls.Config.
 func (c *Config) GetTLSConfig(opts ...Option) *tls.Config {
 	root, err := c.getCertPool()
@@ -187,12 +222,23 @@ func (c *Config) GetTLSConfig(opts ...Option) *tls.Config {
 		}
 	}
 
+	clientRoot, err := c.loadSelfCertPool(Certificate_AUTHORITY_VERIFY_CLIENT)
+	if err != nil {
+		newError("failed to load client root certificate").AtError().Base(err).WriteToLog()
+	}
+
 	config := &tls.Config{
 		ClientSessionCache:     globalSessionCache,
 		RootCAs:                root,
 		InsecureSkipVerify:     c.AllowInsecure,
 		NextProtos:             c.NextProtocol,
 		SessionTicketsDisabled: !c.EnableSessionResumption,
+		VerifyPeerCertificate:  c.verifyPeerCert,
+		ClientCAs:              clientRoot,
+	}
+
+	if c.AllowInsecureIfPinnedPeerCertificate && c.PinnedPeerCertificateChainSha256 != nil {
+		config.InsecureSkipVerify = true
 	}
 
 	for _, opt := range opts {
@@ -215,6 +261,46 @@ func (c *Config) GetTLSConfig(opts ...Option) *tls.Config {
 		config.NextProtos = []string{"h2", "http/1.1"}
 	}
 
+	if c.VerifyClientCertificate {
+		config.ClientAuth = tls.RequireAndVerifyClientCert
+	}
+
+	switch c.MinVersion {
+	case Config_TLS1_0:
+		config.MinVersion = tls.VersionTLS10
+	case Config_TLS1_1:
+		config.MinVersion = tls.VersionTLS11
+	case Config_TLS1_2:
+		config.MinVersion = tls.VersionTLS12
+	case Config_TLS1_3:
+		config.MinVersion = tls.VersionTLS13
+	}
+
+	switch c.MaxVersion {
+	case Config_TLS1_0:
+		config.MaxVersion = tls.VersionTLS10
+	case Config_TLS1_1:
+		config.MaxVersion = tls.VersionTLS11
+	case Config_TLS1_2:
+		config.MaxVersion = tls.VersionTLS12
+	case Config_TLS1_3:
+		config.MaxVersion = tls.VersionTLS13
+	}
+
+	if len(c.EchConfig) > 0 || len(c.Ech_DOHserver) > 0 {
+		err := ApplyECH(c, config) //nolint: staticcheck
+		if err != nil {            //nolint: staticcheck
+			newError("unable to set ECH").AtError().Base(err).WriteToLog()
+		}
+	}
+
+	if len(c.Ciphersuites) > 0 {
+		config.CipherSuites = make([]uint16, 0, len(c.Ciphersuites))
+		for _, cs := range c.Ciphersuites {
+			config.CipherSuites = append(config.CipherSuites, uint16(cs))
+		}
+	}
+
 	return config
 }
 
@@ -224,8 +310,13 @@ type Option func(*tls.Config)
 // WithDestination sets the server name in TLS config.
 func WithDestination(dest net.Destination) Option {
 	return func(config *tls.Config) {
-		if dest.Address.Family().IsDomain() && config.ServerName == "" {
-			config.ServerName = dest.Address.Domain()
+		if config.ServerName == "" {
+			switch dest.Address.Family() {
+			case net.AddressFamilyDomain:
+				config.ServerName = dest.Address.Domain()
+			case net.AddressFamilyIPv4, net.AddressFamilyIPv6:
+				config.ServerName = dest.Address.IP().String()
+			}
 		}
 	}
 }
@@ -244,9 +335,11 @@ func ConfigFromStreamSettings(settings *internet.MemoryStreamConfig) *Config {
 	if settings == nil {
 		return nil
 	}
-	config, ok := settings.SecuritySettings.(*Config)
-	if !ok {
+	if settings.SecuritySettings == nil {
 		return nil
 	}
+	// Fail close for unknown TLS settings type.
+	// For TLS Clients, Security Engine should be used, instead of this.
+	config := settings.SecuritySettings.(*Config)
 	return config
 }

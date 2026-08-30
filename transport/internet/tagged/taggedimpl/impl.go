@@ -1,14 +1,16 @@
+//go:build !confonly
 // +build !confonly
 
 package taggedimpl
 
 import (
 	"context"
-	core "github.com/v2fly/v2ray-core/v4"
-	"github.com/v2fly/v2ray-core/v4/common/net"
-	"github.com/v2fly/v2ray-core/v4/common/session"
-	"github.com/v2fly/v2ray-core/v4/features/routing"
-	"github.com/v2fly/v2ray-core/v4/transport/internet/tagged"
+
+	core "github.com/v2fly/v2ray-core/v5"
+	"github.com/v2fly/v2ray-core/v5/common/net"
+	"github.com/v2fly/v2ray-core/v5/common/session"
+	"github.com/v2fly/v2ray-core/v5/features/routing"
+	"github.com/v2fly/v2ray-core/v5/transport/internet/tagged"
 )
 
 func DialTaggedOutbound(ctx context.Context, dest net.Destination, tag string) (net.Conn, error) {
@@ -26,7 +28,7 @@ func DialTaggedOutbound(ctx context.Context, dest net.Destination, tag string) (
 	content.SkipDNSResolve = true
 
 	ctx = session.ContextWithContent(ctx, content)
-	session.SetForcedOutboundTagToContext(ctx, tag)
+	ctx = session.SetForcedOutboundTagToContext(ctx, tag)
 
 	r, err := dispatcher.Dispatch(ctx, dest)
 	if err != nil {

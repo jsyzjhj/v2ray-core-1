@@ -2,10 +2,10 @@ package internet
 
 import (
 	"context"
-	"github.com/v2fly/v2ray-core/v4/transport/internet/tagged"
 
-	"github.com/v2fly/v2ray-core/v4/common/net"
-	"github.com/v2fly/v2ray-core/v4/common/session"
+	"github.com/v2fly/v2ray-core/v5/common/net"
+	"github.com/v2fly/v2ray-core/v5/common/session"
+	"github.com/v2fly/v2ray-core/v5/transport/internet/tagged"
 )
 
 // Dialer is the interface for dialing outbound connections.
@@ -20,9 +20,7 @@ type Dialer interface {
 // dialFunc is an interface to dial network connection to a specific destination.
 type dialFunc func(ctx context.Context, dest net.Destination, streamSettings *MemoryStreamConfig) (Connection, error)
 
-var (
-	transportDialerCache = make(map[string]dialFunc)
-)
+var transportDialerCache = make(map[string]dialFunc)
 
 // RegisterTransportDialer registers a Dialer with given name.
 func RegisterTransportDialer(protocol string, dialer dialFunc) error {
@@ -45,6 +43,11 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *MemoryStrea
 		}
 
 		protocol := streamSettings.ProtocolName
+
+		if originalProtocolName := getOriginalMessageName(streamSettings); originalProtocolName != "" {
+			protocol = originalProtocolName
+		}
+
 		dialer := transportDialerCache[protocol]
 		if dialer == nil {
 			return nil, newError(protocol, " dialer not registered").AtError()
@@ -65,13 +68,31 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *MemoryStrea
 
 // DialSystem calls system dialer to create a network connection.
 func DialSystem(ctx context.Context, dest net.Destination, sockopt *SocketConfig) (net.Conn, error) {
+	outbound := session.OutboundFromContext(ctx)
+
 	var src net.Address
-	if outbound := session.OutboundFromContext(ctx); outbound != nil {
+	if outbound != nil {
 		src = outbound.Gateway
 	}
 
 	if transportLayerOutgoingTag := session.GetTransportLayerProxyTagFromContext(ctx); transportLayerOutgoingTag != "" {
 		return DialTaggedOutbound(ctx, dest, transportLayerOutgoingTag)
+	}
+
+	originalAddr := dest.Address
+	if outbound != nil && outbound.Resolver != nil && dest.Address.Family().IsDomain() {
+		if addr := outbound.Resolver(ctx, dest.Address.Domain()); addr != nil {
+			dest.Address = addr
+		}
+	}
+
+	switch {
+	case src != nil && dest.Address != originalAddr:
+		newError("dialing to ", dest, " resolved from ", originalAddr, " via ", src).WriteToLog(session.ExportIDToError(ctx))
+	case src != nil:
+		newError("dialing to ", dest, " via ", src).WriteToLog(session.ExportIDToError(ctx))
+	case dest.Address != originalAddr:
+		newError("dialing to ", dest, " resolved from ", originalAddr).WriteToLog(session.ExportIDToError(ctx))
 	}
 
 	return effectiveSystemDialer.Dial(ctx, src, dest, sockopt)

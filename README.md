@@ -5,10 +5,10 @@
   <p>Project V is a set of network tools that helps you to build your own computer network. It secures your network connections and thus protects your privacy.</p>
 </div>
 
-[![GitHub Test Badge](https://github.com/v2fly/v2ray-core/workflows/Test/badge.svg)](https://github.com/v2fly/v2ray-core/actions)
+[![GitHub Test Badge](https://github.com/v2fly/v2ray-core/actions/workflows/test.yml/badge.svg)](https://github.com/v2fly/v2ray-core/actions/workflows/test.yml)
 [![codecov.io](https://codecov.io/gh/v2fly/v2ray-core/branch/master/graph/badge.svg?branch=master)](https://codecov.io/gh/v2fly/v2ray-core?branch=master)
-[![codebeat](https://goreportcard.com/badge/github.com/v2fly/v2ray-core)](https://goreportcard.com/report/github.com/v2fly/v2ray-core)
-[![Codacy Badge](https://app.codacy.com/project/badge/Grade/e150b7ede2114388921943bf23d95161)](https://www.codacy.com/gh/v2fly/v2ray-core/dashboard?utm_source=github.com&amp;utm_medium=referral&amp;utm_content=v2fly/v2ray-core&amp;utm_campaign=Badge_Grade)
+[![goreportcard](https://goreportcard.com/badge/github.com/v2fly/v2ray-core/v5)](https://goreportcard.com/report/github.com/v2fly/v2ray-core/v5)
+[![Codacy Badge](https://app.codacy.com/project/badge/Grade/e150b7ede2114388921943bf23d95161)](https://app.codacy.com/gh/v2fly/v2ray-core/dashboard)
 [![Downloads](https://img.shields.io/github/downloads/v2fly/v2ray-core/total.svg)](https://github.com/v2fly/v2ray-core/releases/latest)
 
 ## Related Links
@@ -32,10 +32,13 @@ This repo relies on the following third-party projects:
 
 - In production:
   - [gorilla/websocket](https://github.com/gorilla/websocket)
-  - [lucas-clemente/quic-go](https://github.com/lucas-clemente/quic-go)
+  - [quic-go/quic-go](https://github.com/quic-go/quic-go)
   - [pires/go-proxyproto](https://github.com/pires/go-proxyproto)
   - [seiflotfy/cuckoofilter](https://github.com/seiflotfy/cuckoofilter)
   - [google/starlark-go](https://github.com/google/starlark-go)
+  - [jhump/protoreflect](https://github.com/jhump/protoreflect)
+  - [inetaf/netaddr](https://github.com/inetaf/netaddr)
+
 - For testing only:
   - [miekg/dns](https://github.com/miekg/dns)
   - [h12w/socks](https://github.com/h12w/socks)

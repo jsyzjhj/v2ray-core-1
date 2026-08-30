@@ -1,22 +1,27 @@
-// +build !confonly
-
 package tls
 
 import (
+	"context"
 	"crypto/tls"
 
-	"github.com/v2fly/v2ray-core/v4/common/buf"
-	"github.com/v2fly/v2ray-core/v4/common/net"
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/common/buf"
+	"github.com/v2fly/v2ray-core/v5/common/net"
 )
 
-//go:generate go run github.com/v2fly/v2ray-core/v4/common/errors/errorgen
+//go:generate go run github.com/v2fly/v2ray-core/v5/common/errors/errorgen
 
-var (
-	_ buf.Writer = (*Conn)(nil)
-)
+var _ buf.Writer = (*Conn)(nil)
 
 type Conn struct {
 	*tls.Conn
+}
+
+func (c *Conn) GetConnectionApplicationProtocol() (string, error) {
+	if err := c.Handshake(); err != nil {
+		return "", err
+	}
+	return c.ConnectionState().NegotiatedProtocol, nil
 }
 
 func (c *Conn) WriteMultiBuffer(mb buf.MultiBuffer) error {
@@ -38,7 +43,7 @@ func (c *Conn) HandshakeAddress() net.Address {
 }
 
 // Client initiates a TLS client handshake on the given connection.
-func Client(c net.Conn, config *tls.Config) net.Conn {
+func Client(c net.Conn, config *tls.Config) *Conn {
 	tlsConn := tls.Client(c, config)
 	return &Conn{Conn: tlsConn}
 }
@@ -64,4 +69,10 @@ func UClient(c net.Conn, config *tls.Config) net.Conn {
 func Server(c net.Conn, config *tls.Config) net.Conn {
 	tlsConn := tls.Server(c, config)
 	return &Conn{Conn: tlsConn}
+}
+
+func init() {
+	common.Must(common.RegisterConfig((*Config)(nil), func(ctx context.Context, config interface{}) (interface{}, error) {
+		return NewTLSSecurityEngineFromConfig(config.(*Config))
+	}))
 }

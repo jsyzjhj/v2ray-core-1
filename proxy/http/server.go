@@ -1,9 +1,8 @@
-// +build !confonly
-
 package http
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"io"
@@ -11,20 +10,20 @@ import (
 	"strings"
 	"time"
 
-	core "github.com/v2fly/v2ray-core/v4"
-	"github.com/v2fly/v2ray-core/v4/common"
-	"github.com/v2fly/v2ray-core/v4/common/buf"
-	"github.com/v2fly/v2ray-core/v4/common/errors"
-	"github.com/v2fly/v2ray-core/v4/common/log"
-	"github.com/v2fly/v2ray-core/v4/common/net"
-	"github.com/v2fly/v2ray-core/v4/common/protocol"
-	http_proto "github.com/v2fly/v2ray-core/v4/common/protocol/http"
-	"github.com/v2fly/v2ray-core/v4/common/session"
-	"github.com/v2fly/v2ray-core/v4/common/signal"
-	"github.com/v2fly/v2ray-core/v4/common/task"
-	"github.com/v2fly/v2ray-core/v4/features/policy"
-	"github.com/v2fly/v2ray-core/v4/features/routing"
-	"github.com/v2fly/v2ray-core/v4/transport/internet"
+	core "github.com/v2fly/v2ray-core/v5"
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/common/buf"
+	"github.com/v2fly/v2ray-core/v5/common/errors"
+	"github.com/v2fly/v2ray-core/v5/common/log"
+	"github.com/v2fly/v2ray-core/v5/common/net"
+	"github.com/v2fly/v2ray-core/v5/common/protocol"
+	http_proto "github.com/v2fly/v2ray-core/v5/common/protocol/http"
+	"github.com/v2fly/v2ray-core/v5/common/session"
+	"github.com/v2fly/v2ray-core/v5/common/signal"
+	"github.com/v2fly/v2ray-core/v5/common/task"
+	"github.com/v2fly/v2ray-core/v5/features/policy"
+	"github.com/v2fly/v2ray-core/v5/features/routing"
+	"github.com/v2fly/v2ray-core/v5/transport/internet"
 )
 
 // Server is an HTTP proxy server.
@@ -203,7 +202,7 @@ func (s *Server) handleConnect(ctx context.Context, _ *http.Request, reader *buf
 		return nil
 	}
 
-	var closeWriter = task.OnSuccess(requestDone, task.Close(link.Writer))
+	closeWriter := task.OnSuccess(requestDone, task.Close(link.Writer))
 	if err := task.Run(ctx, closeWriter, responseDone); err != nil {
 		common.Interrupt(link.Reader)
 		common.Interrupt(link.Writer)
@@ -244,9 +243,7 @@ func (s *Server) handlePlainHTTP(ctx context.Context, request *http.Request, wri
 		request.Header.Set("User-Agent", "")
 	}
 
-	content := &session.Content{
-		Protocol: "http/1.1",
-	}
+	content := &session.Content{}
 
 	content.SetAttribute(":method", strings.ToUpper(request.Method))
 	content.SetAttribute(":path", request.URL.Path)
@@ -262,7 +259,7 @@ func (s *Server) handlePlainHTTP(ctx context.Context, request *http.Request, wri
 		return err
 	}
 
-	// Plain HTTP request is not a stream. The request always finishes before response. Hense request has to be closed later.
+	// Plain HTTP request is not a stream. The request always finishes before response. Hence, request has to be closed later.
 	defer common.Close(link.Writer)
 	var result error = errWaitAnother
 
@@ -279,7 +276,7 @@ func (s *Server) handlePlainHTTP(ctx context.Context, request *http.Request, wri
 
 	responseDone := func() error {
 		responseReader := bufio.NewReaderSize(&buf.BufferedReader{Reader: link.Reader}, buf.Size)
-		response, err := http.ReadResponse(responseReader, request)
+		response, err := readResponseAndHandle100Continue(responseReader, request, writer)
 		if err == nil {
 			http_proto.RemoveHopByHopHeaders(response.Header)
 			if response.ContentLength >= 0 {
@@ -321,6 +318,38 @@ func (s *Server) handlePlainHTTP(ctx context.Context, request *http.Request, wri
 	}
 
 	return result
+}
+
+// Sometimes, server might send 1xx response to client
+// it should not be processed by http proxy handler, just forward it to client
+func readResponseAndHandle100Continue(r *bufio.Reader, req *http.Request, writer io.Writer) (*http.Response, error) {
+	// have a little look of response
+	peekBytes, err := r.Peek(56)
+	if err == nil || err == bufio.ErrBufferFull {
+		str := string(peekBytes)
+		ResponseLine := strings.Split(str, "\r\n")[0]
+		_, status, _ := strings.Cut(ResponseLine, " ")
+		// only handle 1xx response
+		if strings.HasPrefix(status, "1") {
+			ResponseHeader1xx := []byte{}
+			// read until \r\n\r\n (end of http response header)
+			for {
+				data, err := r.ReadSlice('\n')
+				if err != nil {
+					return nil, newError("failed to read http 1xx response").Base(err).AtError()
+				}
+				ResponseHeader1xx = append(ResponseHeader1xx, data...)
+				if bytes.Equal(ResponseHeader1xx[len(ResponseHeader1xx)-4:], []byte{'\r', '\n', '\r', '\n'}) {
+					break
+				}
+				if len(ResponseHeader1xx) > 1024 {
+					return nil, newError("too big http 1xx response").AtError()
+				}
+			}
+			writer.Write(ResponseHeader1xx)
+		}
+	}
+	return http.ReadResponse(r, req)
 }
 
 func init() {

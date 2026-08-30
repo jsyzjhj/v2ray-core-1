@@ -3,7 +3,7 @@ package buf
 import (
 	"io"
 
-	"github.com/v2fly/v2ray-core/v4/common/bytespool"
+	"github.com/v2fly/v2ray-core/v5/common/bytespool"
 )
 
 const (
@@ -13,19 +13,46 @@ const (
 
 var pool = bytespool.GetPool(Size)
 
+// ownership represents the data owner of the buffer.
+type ownership uint8
+
+const (
+	managed    ownership = 0
+	unmanaged  ownership = 1
+	bytespools ownership = 2
+)
+
 // Buffer is a recyclable allocation of a byte array. Buffer.Release() recycles
 // the buffer into an internal buffer pool, in order to recreate a buffer more
 // quickly.
 type Buffer struct {
-	v     []byte
-	start int32
-	end   int32
+	v         []byte
+	start     int32
+	end       int32
+	ownership ownership
 }
 
 // New creates a Buffer with 0 length and 2K capacity.
 func New() *Buffer {
 	return &Buffer{
 		v: pool.Get().([]byte),
+	}
+}
+
+// NewWithSize creates a Buffer with 0 length and capacity with at least the given size.
+func NewWithSize(size int32) *Buffer {
+	return &Buffer{
+		v:         bytespool.Alloc(size),
+		ownership: bytespools,
+	}
+}
+
+// FromBytes creates a Buffer with an existed bytearray
+func FromBytes(data []byte) *Buffer {
+	return &Buffer{
+		v:         data,
+		end:       int32(len(data)),
+		ownership: unmanaged,
 	}
 }
 
@@ -39,14 +66,19 @@ func StackNew() Buffer {
 
 // Release recycles the buffer into an internal buffer pool.
 func (b *Buffer) Release() {
-	if b == nil || b.v == nil {
+	if b == nil || b.v == nil || b.ownership == unmanaged {
 		return
 	}
 
 	p := b.v
 	b.v = nil
 	b.Clear()
-	pool.Put(p) // nolint: staticcheck
+	switch b.ownership {
+	case managed:
+		pool.Put(p) // nolint: staticcheck
+	case bytespools:
+		bytespool.Free(p) // nolint: staticcheck
+	}
 }
 
 // Clear clears the content of the buffer, results an empty buffer with
@@ -141,6 +173,14 @@ func (b *Buffer) Len() int32 {
 	return b.end - b.start
 }
 
+// Cap returns the capacity of the buffer content.
+func (b *Buffer) Cap() int32 {
+	if b == nil {
+		return 0
+	}
+	return int32(len(b.v))
+}
+
 // IsEmpty returns true if the buffer is empty.
 func (b *Buffer) IsEmpty() bool {
 	return b.Len() == 0
@@ -171,6 +211,28 @@ func (b *Buffer) WriteByte(v byte) error {
 // WriteString implements io.StringWriter.
 func (b *Buffer) WriteString(s string) (int, error) {
 	return b.Write([]byte(s))
+}
+
+// ReadByte implements io.ByteReader
+func (b *Buffer) ReadByte() (byte, error) {
+	if b.start == b.end {
+		return 0, io.EOF
+	}
+
+	nb := b.v[b.start]
+	b.start++
+	return nb, nil
+}
+
+// ReadBytes implements bufio.Reader.ReadBytes
+func (b *Buffer) ReadBytes(length int32) ([]byte, error) {
+	if b.end-b.start < length {
+		return nil, io.EOF
+	}
+
+	nb := b.v[b.start : b.start+length]
+	b.start += length
+	return nb, nil
 }
 
 // Read implements io.Reader.Read().

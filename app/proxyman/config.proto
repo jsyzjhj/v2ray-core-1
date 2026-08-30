@@ -2,14 +2,14 @@ syntax = "proto3";
 
 package v2ray.core.app.proxyman;
 option csharp_namespace = "V2Ray.Core.App.Proxyman";
-option go_package = "github.com/v2fly/v2ray-core/v4/app/proxyman";
+option go_package = "github.com/v2fly/v2ray-core/v5/app/proxyman";
 option java_package = "com.v2ray.core.app.proxyman";
 option java_multiple_files = true;
 
 import "common/net/address.proto";
 import "common/net/port.proto";
 import "transport/internet/config.proto";
-import "common/serial/typed_message.proto";
+import "google/protobuf/any.proto";
 
 message InboundConfig {}
 
@@ -79,18 +79,26 @@ message ReceiverConfig {
 
 message InboundHandlerConfig {
   string tag = 1;
-  v2ray.core.common.serial.TypedMessage receiver_settings = 2;
-  v2ray.core.common.serial.TypedMessage proxy_settings = 3;
+  google.protobuf.Any receiver_settings = 2;
+  google.protobuf.Any proxy_settings = 3;
 }
 
 message OutboundConfig {}
 
 message SenderConfig {
+  enum DomainStrategy {
+    AS_IS = 0;
+    USE_IP = 1;
+    USE_IP4 = 2;
+    USE_IP6 = 3;
+  }
+
   // Send traffic through the given IP. Only IP is allowed.
   v2ray.core.common.net.IPOrDomain via = 1;
   v2ray.core.transport.internet.StreamConfig stream_settings = 2;
   v2ray.core.transport.internet.ProxyConfig proxy_settings = 3;
   MultiplexingConfig multiplex_settings = 4;
+  DomainStrategy domain_strategy = 5;
 }
 
 message MultiplexingConfig {

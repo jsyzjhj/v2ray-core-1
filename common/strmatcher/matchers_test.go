@@ -1,10 +1,12 @@
 package strmatcher_test
 
 import (
+	"reflect"
 	"testing"
+	"unsafe"
 
-	"github.com/v2fly/v2ray-core/v4/common"
-	. "github.com/v2fly/v2ray-core/v4/common/strmatcher"
+	"github.com/v2fly/v2ray-core/v5/common"
+	. "github.com/v2fly/v2ray-core/v5/common/strmatcher"
 )
 
 func TestMatcher(t *testing.T) {
@@ -71,171 +73,77 @@ func TestMatcher(t *testing.T) {
 		}
 	}
 }
-func TestACAutomaton(t *testing.T) {
-	cases1 := []struct {
-		pattern string
-		mType   Type
-		input   string
-		output  bool
-	}{
-		{
-			pattern: "v2fly.org",
-			mType:   Domain,
-			input:   "www.v2fly.org",
-			output:  true,
-		},
-		{
-			pattern: "v2fly.org",
-			mType:   Domain,
-			input:   "v2fly.org",
-			output:  true,
-		},
-		{
-			pattern: "v2fly.org",
-			mType:   Domain,
-			input:   "www.v3fly.org",
-			output:  false,
-		},
-		{
-			pattern: "v2fly.org",
-			mType:   Domain,
-			input:   "2fly.org",
-			output:  false,
-		},
-		{
-			pattern: "v2fly.org",
-			mType:   Domain,
-			input:   "xv2fly.org",
-			output:  false,
-		},
-		{
-			pattern: "v2fly.org",
-			mType:   Full,
-			input:   "v2fly.org",
-			output:  true,
-		},
-		{
-			pattern: "v2fly.org",
-			mType:   Full,
-			input:   "xv2fly.org",
-			output:  false,
-		},
-	}
-	for _, test := range cases1 {
-		var ac = NewACAutomaton()
-		ac.Add(test.pattern, test.mType)
-		ac.Build()
-		if m := ac.Match(test.input); m != test.output {
-			t.Error("unexpected output: ", m, " for test case ", test)
-		}
-	}
-	{
-		cases2Input := []struct {
-			pattern string
-			mType   Type
-		}{
-			{
-				pattern: "163.com",
-				mType:   Domain,
-			},
-			{
-				pattern: "m.126.com",
-				mType:   Full,
-			},
-			{
-				pattern: "3.com",
-				mType:   Full,
-			},
-			{
-				pattern: "google.com",
-				mType:   Substr,
-			},
-			{
-				pattern: "vgoogle.com",
-				mType:   Substr,
-			},
-		}
-		var ac = NewACAutomaton()
-		for _, test := range cases2Input {
-			ac.Add(test.pattern, test.mType)
-		}
-		ac.Build()
-		cases2Output := []struct {
-			pattern string
-			res     bool
-		}{
-			{
-				pattern: "126.com",
-				res:     false,
-			},
-			{
-				pattern: "m.163.com",
-				res:     true,
-			},
-			{
-				pattern: "mm163.com",
-				res:     false,
-			},
-			{
-				pattern: "m.126.com",
-				res:     true,
-			},
-			{
-				pattern: "163.com",
-				res:     true,
-			},
-			{
-				pattern: "63.com",
-				res:     false,
-			},
-			{
-				pattern: "oogle.com",
-				res:     false,
-			},
-			{
-				pattern: "vvgoogle.com",
-				res:     true,
-			},
-		}
-		for _, test := range cases2Output {
-			if m := ac.Match(test.pattern); m != test.res {
-				t.Error("unexpected output: ", m, " for test case ", test)
-			}
-		}
-	}
 
-	{
-		cases3Input := []struct {
-			pattern string
-			mType   Type
-		}{
-			{
-				pattern: "video.google.com",
-				mType:   Domain,
-			},
-			{
-				pattern: "gle.com",
-				mType:   Domain,
-			},
+func TestToDomain(t *testing.T) {
+	{ // Test normal ASCII domain, which should not trigger new string data allocation
+		input := "v2fly.org"
+		domain, err := ToDomain(input)
+		if err != nil {
+			t.Error("unexpected error: ", err)
 		}
-		var ac = NewACAutomaton()
-		for _, test := range cases3Input {
-			ac.Add(test.pattern, test.mType)
+		if domain != input {
+			t.Error("unexpected output: ", domain, " for test case ", input)
 		}
-		ac.Build()
-		cases3Output := []struct {
-			pattern string
-			res     bool
-		}{
-			{
-				pattern: "google.com",
-				res:     false,
-			},
+		if (*reflect.StringHeader)(unsafe.Pointer(&input)).Data != (*reflect.StringHeader)(unsafe.Pointer(&domain)).Data {
+			t.Error("different string data of output: ", domain, " and test case ", input)
 		}
-		for _, test := range cases3Output {
-			if m := ac.Match(test.pattern); m != test.res {
-				t.Error("unexpected output: ", m, " for test case ", test)
-			}
+	}
+	{ // Test ASCII domain containing upper case letter, which should be converted to lower case
+		input := "v2FLY.oRg"
+		domain, err := ToDomain(input)
+		if err != nil {
+			t.Error("unexpected error: ", err)
+		}
+		if domain != "v2fly.org" {
+			t.Error("unexpected output: ", domain, " for test case ", input)
+		}
+	}
+	{ // Test internationalized domain, which should be translated to ASCII punycode
+		input := "v2fly.公益"
+		domain, err := ToDomain(input)
+		if err != nil {
+			t.Error("unexpected error: ", err)
+		}
+		if domain != "v2fly.xn--55qw42g" {
+			t.Error("unexpected output: ", domain, " for test case ", input)
+		}
+	}
+	{ // Test internationalized domain containing upper case letter
+		input := "v2FLY.公益"
+		domain, err := ToDomain(input)
+		if err != nil {
+			t.Error("unexpected error: ", err)
+		}
+		if domain != "v2fly.xn--55qw42g" {
+			t.Error("unexpected output: ", domain, " for test case ", input)
+		}
+	}
+	{ // Test domain name of invalid character, which should return with error
+		input := "{"
+		_, err := ToDomain(input)
+		if err == nil {
+			t.Error("unexpected non error for test case ", input)
+		}
+	}
+	{ // Test domain name containing a space, which should return with error
+		input := "Mijia Cloud"
+		_, err := ToDomain(input)
+		if err == nil {
+			t.Error("unexpected non error for test case ", input)
+		}
+	}
+	{ // Test domain name containing an underscore, which should return with error
+		input := "Mijia_Cloud.com"
+		_, err := ToDomain(input)
+		if err == nil {
+			t.Error("unexpected non error for test case ", input)
+		}
+	}
+	{ // Test internationalized domain containing invalid character
+		input := "Mijia Cloud.公司"
+		_, err := ToDomain(input)
+		if err == nil {
+			t.Error("unexpected non error for test case ", input)
 		}
 	}
 }

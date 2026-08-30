@@ -1,23 +1,23 @@
-// +build !confonly
-
 package domainsocket
 
 import (
-	"github.com/v2fly/v2ray-core/v4/common"
-	"github.com/v2fly/v2ray-core/v4/common/net"
-	"github.com/v2fly/v2ray-core/v4/transport/internet"
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/common/net"
+	"github.com/v2fly/v2ray-core/v5/transport/internet"
 )
 
-const protocolName = "domainsocket"
-const sizeofSunPath = 108
+const (
+	protocolName  = "domainsocket"
+	sizeofSunPath = 108
+)
 
 func (c *Config) GetUnixAddr() (*net.UnixAddr, error) {
 	path := c.Path
 	if path == "" {
 		return nil, newError("empty domain socket path")
 	}
-	if c.Abstract && path[0] != '@' {
-		path = "@" + path
+	if c.Abstract && path[0] != '\x00' {
+		path = "\x00" + path
 	}
 	if c.Abstract && c.Padding {
 		raw := []byte(path)

@@ -3,12 +3,10 @@ package internet
 import (
 	"context"
 
-	"github.com/v2fly/v2ray-core/v4/common/net"
+	"github.com/v2fly/v2ray-core/v5/common/net"
 )
 
-var (
-	transportListenerCache = make(map[string]ListenFunc)
-)
+var transportListenerCache = make(map[string]ListenFunc)
 
 func RegisterTransportListener(protocol string, listener ListenFunc) error {
 	if _, found := transportListenerCache[protocol]; found {
@@ -38,6 +36,11 @@ func ListenUnix(ctx context.Context, address net.Address, settings *MemoryStream
 	}
 
 	protocol := settings.ProtocolName
+
+	if originalProtocolName := getOriginalMessageName(settings); originalProtocolName != "" {
+		protocol = originalProtocolName
+	}
+
 	listenFunc := transportListenerCache[protocol]
 	if listenFunc == nil {
 		return nil, newError(protocol, " unix istener not registered.").AtError()
@@ -48,6 +51,7 @@ func ListenUnix(ctx context.Context, address net.Address, settings *MemoryStream
 	}
 	return listener, nil
 }
+
 func ListenTCP(ctx context.Context, address net.Address, port net.Port, settings *MemoryStreamConfig, handler ConnHandler) (Listener, error) {
 	if settings == nil {
 		s, err := ToMemoryStreamConfig(nil)
@@ -66,6 +70,11 @@ func ListenTCP(ctx context.Context, address net.Address, port net.Port, settings
 	}
 
 	protocol := settings.ProtocolName
+
+	if originalProtocolName := getOriginalMessageName(settings); originalProtocolName != "" {
+		protocol = originalProtocolName
+	}
+
 	listenFunc := transportListenerCache[protocol]
 	if listenFunc == nil {
 		return nil, newError(protocol, " listener not registered.").AtError()

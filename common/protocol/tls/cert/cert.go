@@ -12,13 +12,14 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/v2fly/v2ray-core/v4/common"
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/common/net"
 )
 
-//go:generate go run github.com/v2fly/v2ray-core/v4/common/errors/errorgen
+//go:generate go run github.com/v2fly/v2ray-core/v5/common/errors/errorgen
 
 type Certificate struct {
-	// Cerificate in ASN.1 DER format
+	// Certificate in ASN.1 DER format
 	Certificate []byte
 	// Private key in ASN.1 DER format
 	PrivateKey []byte
@@ -73,6 +74,12 @@ func DNSNames(names ...string) Option {
 func CommonName(name string) Option {
 	return func(c *x509.Certificate) {
 		c.Subject.CommonName = name
+	}
+}
+
+func IPAddresses(ip ...net.IP) Option {
+	return func(c *x509.Certificate) {
+		c.IPAddresses = ip
 	}
 }
 

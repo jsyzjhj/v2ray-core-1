@@ -1,3 +1,4 @@
+//go:build !confonly
 // +build !confonly
 
 package dns
@@ -5,24 +6,27 @@ package dns
 import (
 	"context"
 
-	core "github.com/v2fly/v2ray-core/v4"
-	"github.com/v2fly/v2ray-core/v4/common/net"
-	"github.com/v2fly/v2ray-core/v4/features/dns"
+	core "github.com/v2fly/v2ray-core/v5"
+	"github.com/v2fly/v2ray-core/v5/common/net"
+	"github.com/v2fly/v2ray-core/v5/features/dns"
 )
 
 type FakeDNSServer struct {
 	fakeDNSEngine dns.FakeDNSEngine
 }
 
-func NewFakeDNSServer() *FakeDNSServer {
-	return &FakeDNSServer{}
+func NewFakeDNSServer(fakeDNSEngine dns.FakeDNSEngine) *FakeDNSServer {
+	return &FakeDNSServer{fakeDNSEngine: fakeDNSEngine}
 }
 
 func (FakeDNSServer) Name() string {
-	return "FakeDNS"
+	return "fakedns"
 }
 
-func (f *FakeDNSServer) QueryIP(ctx context.Context, domain string, _ net.IP, _ dns.IPOption, _ bool) ([]net.IP, error) {
+func (f *FakeDNSServer) QueryIP(ctx context.Context, domain string, _ net.IP, opt dns.IPOption, _ bool) ([]net.IP, error) {
+	if !opt.FakeEnable {
+		return nil, nil // Returning empty ip record with no error will continue DNS lookup, effectively indicating that this server is disabled.
+	}
 	if f.fakeDNSEngine == nil {
 		if err := core.RequireFeatures(ctx, func(fd dns.FakeDNSEngine) {
 			f.fakeDNSEngine = fd
@@ -30,7 +34,12 @@ func (f *FakeDNSServer) QueryIP(ctx context.Context, domain string, _ net.IP, _ 
 			return nil, newError("Unable to locate a fake DNS Engine").Base(err).AtError()
 		}
 	}
-	ips := f.fakeDNSEngine.GetFakeIPForDomain(domain)
+	var ips []net.Address
+	if fkr0, ok := f.fakeDNSEngine.(dns.FakeDNSEngineRev0); ok {
+		ips = fkr0.GetFakeIPForDomain3(domain, opt.IPv4Enable, opt.IPv6Enable)
+	} else {
+		ips = filterIP(f.fakeDNSEngine.GetFakeIPForDomain(domain), opt)
+	}
 
 	netIP, err := toNetIP(ips)
 	if err != nil {
@@ -39,5 +48,13 @@ func (f *FakeDNSServer) QueryIP(ctx context.Context, domain string, _ net.IP, _ 
 
 	newError(f.Name(), " got answer: ", domain, " -> ", ips).AtInfo().WriteToLog()
 
-	return netIP, nil
+	if len(netIP) > 0 {
+		return netIP, nil
+	}
+	return nil, dns.ErrEmptyResponse
+}
+
+func isFakeDNS(server Server) bool {
+	_, ok := server.(*FakeDNSServer)
+	return ok
 }
